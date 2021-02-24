@@ -1,9 +1,9 @@
 # pkg-config packages list
-PKGS := x264 libavutil libavformat libavcodec libswscale libv4l2 opencv sdl2 SDL_net
+PKGS := x264 libavutil libavformat libavcodec libswscale libv4l2 opencv4 sdl2 SDL_net
 PKG_CFLAGS := $(shell pkg-config --cflags $(PKGS))
 PKG_LDFLAGS := $(shell pkg-config --libs $(PKGS))
 
-ADD_CFLAGS := -g -D__STDC_CONSTANT_MACROS
+ADD_CFLAGS := -O -D__STDC_CONSTANT_MACROS -Wno-deprecated-declarations -Wno-unused-result
 ADD_LDFLAGS := -lrt
 
 CFLAGS  := $(PKG_CFLAGS) $(ADD_CFLAGS) $(CFLAGS)
@@ -34,6 +34,9 @@ SOURCES=`ls *.cpp`
 
 encoder: encoder.o
 	g++ $? $(CFLAGS) -o $@ $(LDFLAGS)
+
+encoder_h264: encoder_h264.o
+	g++ $? -o $@ $(LDFLAGS)
 
 encoder_udp: encoder_udp.o
 	g++ $? -o $@ $(LDFLAGS)

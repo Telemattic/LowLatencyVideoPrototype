@@ -1,4 +1,6 @@
+#ifndef __STDC_CONSTANT_MACROS
 #define __STDC_CONSTANT_MACROS
+#endif
 
 #include <sstream>
 #include <stdexcept>
@@ -252,6 +254,8 @@ int FrameThread( void* ptr )
             SDL_PushEvent( &event );
         }
     }
+
+    return 0;
 }
 
 

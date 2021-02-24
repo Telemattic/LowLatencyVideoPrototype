@@ -16,5 +16,5 @@ targets.push_back( source );
 
 size_t packet_server::num_targets( void )
 {
-targets.size();
+return targets.size();
 }
