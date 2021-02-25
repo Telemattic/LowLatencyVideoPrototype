@@ -235,6 +235,18 @@ int main( int argc, char** argv )
     cerr << endl;
 
     v4l2_pix_format fmt = dev.GetFormat();
+    if (fmt.width != WIDTH || fmt.height != HEIGHT) {
+
+      cerr << "Format size: " << fmt.width << 'x' << fmt.height
+	   << ", changing to " << WIDTH << 'x' << HEIGHT << endl;
+
+      fmt.width = WIDTH;
+      fmt.height = HEIGHT;
+      dev.SetFormat(fmt);
+
+      fmt = dev.GetFormat();
+    }
+    
     v4l2_fract fps = dev.GetInterval();
     cerr << "Frame info: " << endl;
     cerr << "  Fourcc: " << fourcc_to_string( fmt.pixelformat ) << endl;

@@ -1,5 +1,5 @@
 # pkg-config packages list
-PKGS := x264 libavutil libavformat libavcodec libswscale libv4l2 opencv4 sdl2 SDL_net
+PKGS := x264 libavutil libavformat libavcodec libswscale libv4l2 opencv sdl2 SDL_net
 PKG_CFLAGS := $(shell pkg-config --cflags $(PKGS))
 PKG_LDFLAGS := $(shell pkg-config --libs $(PKGS))
 
@@ -11,6 +11,7 @@ LDFLAGS := $(PKG_LDFLAGS) $(ADD_LDFLAGS) $(LDFLAGS)
 CXXFLAGS := $(CFLAGS)
 
 ALL_BUILDS = \
+	control \
 	encoder\
 	encoder_udp\
 	encoder_h264\
@@ -31,6 +32,9 @@ SOURCES=`ls *.cpp`
 	fastdep $(SOURCES) > .depend
 
 -include .depend
+
+control: control.o
+	g++ $? -o $@ $(LDFLAGS)
 
 encoder: encoder.o
 	g++ $? $(CFLAGS) -o $@ $(LDFLAGS)

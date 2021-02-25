@@ -12,3 +12,4 @@ v4l2_enumerate
 viewer_sdl
 viewer_stdin
 viewer_udp_ocv
+control
