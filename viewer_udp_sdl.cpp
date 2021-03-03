@@ -109,17 +109,21 @@ FrameQueue::pop()
 class Decoder {
 
 public:
-  Decoder();
+  Decoder(uint16_t width, uint16_t height);
 
   std::unique_ptr<Frame> operator()(uint8_t *data, size_t len);
 
 private:
+  const uint16_t  m_width;
+  const uint16_t  m_height;
   AVCodec*        m_codec    = nullptr;
   AVCodecContext* m_codecCtx = nullptr;
   AVFrame*        m_frame    = nullptr;
 };
 
-Decoder::Decoder()
+Decoder::Decoder(uint16_t width, uint16_t height)
+  : m_width(width)
+  , m_height(height)
 {
   m_codec = avcodec_find_decoder(AV_CODEC_ID_H264);
   if (!m_codec)
@@ -130,8 +134,8 @@ Decoder::Decoder()
     throw std::runtime_error("avcodec_alloc_context3");
 
   m_codecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
-  m_codecCtx->width = WIDTH;
-  m_codecCtx->height = HEIGHT;
+  m_codecCtx->width = m_width;
+  m_codecCtx->height = m_height;
   if (avcodec_open2(m_codecCtx, m_codec, nullptr) < 0)
     throw std::runtime_error("avcodec_open2");
 
@@ -193,22 +197,33 @@ Decoder::operator()(uint8_t* data, size_t len)
   return retval;
 }
 
-class ReadThread {
+class Reader {
 
 public:
-  ReadThread(uint32_t frameEventNumber, FrameQueue& frameQueue);
+  static int ThreadFunc(void*);
+  
+  Reader(uint16_t w, uint16_t h, uint32_t frameEventNumber, FrameQueue&);
 
   void run();
 
 private:
+  Decoder        m_decoder;
   const uint32_t m_frameEventNumber;
   FrameQueue&    m_frameQueue;
   int            m_socket = -1;
-  Decoder        m_decoder;
 };
 
-ReadThread::ReadThread(uint32_t frameEventNumber, FrameQueue& frameQueue)
-  : m_frameEventNumber(frameEventNumber)
+int
+Reader::ThreadFunc(void* arg)
+{
+  reinterpret_cast<Reader*>(arg)->run();
+  return 0;
+}
+
+Reader::Reader(uint16_t width, uint16_t height,
+	       uint32_t frameEventNumber, FrameQueue& frameQueue)
+  : m_decoder(width, height)
+  , m_frameEventNumber(frameEventNumber)
   , m_frameQueue(frameQueue)
 {
   m_socket = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -230,7 +245,7 @@ ReadThread::ReadThread(uint32_t frameEventNumber, FrameQueue& frameQueue)
 }
 
 void
-ReadThread::run()
+Reader::run()
 {
   for (;;) {
 
@@ -250,118 +265,140 @@ ReadThread::run()
   }
 }
 
+class UI {
+  
+public:
+  UI(uint16_t width, uint16_t height, uint32_t frameEventNumber, FrameQueue&);
+  ~UI();
+
+  void run();
+
+private:
+  const uint16_t m_width;
+  const uint16_t m_height;
+  const uint32_t m_frameEventNumber;
+  FrameQueue&    m_frameQueue;
+  SDL_Rect       m_winRect;
+  SDL_Window*    m_window = nullptr;
+  SDL_Renderer*  m_renderer = nullptr;
+  SDL_Texture*   m_texture = nullptr;
+};
+
+UI::UI(uint16_t width, uint16_t height, uint32_t frameEventNumber, FrameQueue& frameQueue)
+  : m_width{width}
+  , m_height{height}
+  , m_frameEventNumber(frameEventNumber)
+  , m_frameQueue(frameQueue)
+  , m_winRect{0, 0, 640, 360}
+{
+  m_window = SDL_CreateWindow
+    (
+     "SDL",
+     SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+     m_winRect.w, m_winRect.h,
+     SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
+     );
+  if (!m_window)
+    THROW( "Couldn't create window: " << SDL_GetError() );
+
+  m_renderer = SDL_CreateRenderer(m_window, -1, 0);
+  if (!m_renderer)
+    THROW( "Couldn't create renderer: " << SDL_GetError() );
+
+  m_texture = SDL_CreateTexture(
+				m_renderer,
+				SDL_PIXELFORMAT_IYUV,
+				SDL_TEXTUREACCESS_STREAMING,
+				m_width, m_height);
+  if (!m_texture)
+    THROW( "Couldn't create texture: " << SDL_GetError() );
+}
+
+UI::~UI()
+{
+  SDL_DestroyRenderer(m_renderer);
+  SDL_DestroyWindow(m_window);
+}
+
+void
+UI::run()
+{
+  bool running = true;
+  while( running ) {
+
+    SDL_Event event;
+    while (SDL_PollEvent(&event) ) {
+
+      switch ( event.type ) {
+	
+      case SDL_QUIT:
+	running = false;
+	break;
+
+      case SDL_KEYUP:
+	if( event.key.keysym.sym == SDLK_ESCAPE )
+	  running = false;
+	break;
+
+      case SDL_WINDOWEVENT:
+	if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
+	  
+	  m_winRect.w = event.window.data1;
+	  m_winRect.h = event.window.data2;
+	  SDL_RenderSetViewport(m_renderer, nullptr);
+	}
+	else if (event.window.event == SDL_WINDOWEVENT_MOVED) {
+	  
+	  m_winRect.x = event.window.data1;
+	  m_winRect.y = event.window.data2;
+	}
+	break;
+
+      default:
+	if (event.type == m_frameEventNumber) {
+
+	  auto frame = m_frameQueue.pop();
+	  std::cout << "frame: data.size()=" << frame->data.size() << std::endl;
+	  SDL_UpdateTexture(m_texture, nullptr, frame->data.data(),
+			    m_width * SDL_BYTESPERPIXEL(SDL_PIXELFORMAT_IYUV) );
+        }
+      }
+
+      SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 0);
+      SDL_RenderClear(m_renderer);
+
+      SDL_Rect src{0, 0, m_width, m_height};
+      SDL_Rect s = ScaleAspect(src, m_winRect);
+
+      SDL_SetRenderDrawColor(m_renderer, 255, 0, 0, 0 );
+      SDL_RenderFillRect(m_renderer, &s);
+
+      SDL_RenderCopy(m_renderer, m_texture, nullptr, &s);
+
+      SDL_RenderPresent(m_renderer);
+
+      SDL_Delay(10);
+    }
+  }
+}
+
 int
 main( int argc, char *argv[] )
 {
-    if( SDL_Init(SDL_INIT_VIDEO) < 0 )
+    if (SDL_Init(SDL_INIT_VIDEO) < 0)
         THROW( "Couldn't initialize SDL: " << SDL_GetError() );
-
-    SDL_Rect winRect;
-    winRect.w = 640;
-    winRect.h = 360;
-
-    SDL_Window* window = SDL_CreateWindow
-        (
-        "SDL",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        winRect.w, winRect.h,
-        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
-        );
-    if( !window )
-        THROW( "Couldn't create window: " << SDL_GetError() );
-
-    SDL_Renderer* renderer = SDL_CreateRenderer( window, -1, 0 );
-    if( !renderer )
-        THROW( "Couldn't create renderer: " << SDL_GetError() );
-
-    SDL_RendererInfo info;
-    SDL_GetRendererInfo(renderer, &info);
-    cout << "Using renderer: " << info.name << endl;
-
-    SDL_Texture* tex = SDL_CreateTexture
-        (
-        renderer,
-        SDL_PIXELFORMAT_IYUV,
-        SDL_TEXTUREACCESS_STREAMING,
-        WIDTH, HEIGHT
-        );
-    if( !tex )
-        THROW( "Couldn't create texture: " << SDL_GetError() );
 
     const auto frameEventNumber{SDL_RegisterEvents(1)};
     FrameQueue frameQueue;
-    ReadThread readThread{frameEventNumber, frameQueue};
     
-    SDL_Thread* ft = SDL_CreateThread(
-				      [](void* arg) {
-					reinterpret_cast<ReadThread*>(arg)->run();
-					return 0; },
+    Reader reader{WIDTH, HEIGHT, frameEventNumber, frameQueue};
+    UI ui{WIDTH, HEIGHT, frameEventNumber, frameQueue};
+
+    SDL_Thread* ft = SDL_CreateThread(Reader::ThreadFunc,
 				      "ReadThread",
-				      &readThread );
+				      &reader );
 
-    bool running = true;
-    while( running )
-    {
-        SDL_Event event;
-        while( SDL_PollEvent( &event ) )
-        {
-            switch ( event.type )
-            {
-            case SDL_QUIT:
-                running = false;
-                break;
-
-            case SDL_KEYUP:
-                if( event.key.keysym.sym == SDLK_ESCAPE )
-                    running = false;
-                if( event.key.keysym.sym == SDLK_f )
-                {
-                }
-                break;
-
-            case SDL_WINDOWEVENT:
-                if( event.window.event == SDL_WINDOWEVENT_RESIZED )
-                {
-                    winRect.w = event.window.data1;
-                    winRect.h = event.window.data2;
-                    SDL_RenderSetViewport( renderer, NULL );
-                }
-                if( event.window.event == SDL_WINDOWEVENT_MOVED )
-                {
-                    winRect.x = event.window.data1;
-                    winRect.y = event.window.data2;
-                }
-                break;
-            }
-
-            if (event.type == frameEventNumber) {
-
-	      auto frame = frameQueue.pop();
-	      SDL_UpdateTexture(tex, nullptr, frame->data.data(),
-				WIDTH * SDL_BYTESPERPIXEL(SDL_PIXELFORMAT_IYUV) );
-            }
-        }
-
-        SDL_SetRenderDrawColor( renderer, 0, 0, 0, 0 );
-        SDL_RenderClear( renderer );
-
-        SDL_Rect src;
-        src.w = WIDTH;
-        src.h = HEIGHT;
-        SDL_Rect s = ScaleAspect(src, winRect );
-
-        SDL_SetRenderDrawColor( renderer, 255, 0, 0, 0 );
-        SDL_RenderFillRect( renderer, &s );
-
-        SDL_RenderCopy( renderer, tex, NULL, &s );
-
-        SDL_RenderPresent( renderer );
-
-        SDL_Delay( 10 );
-    }
-
-    SDL_DestroyRenderer( renderer );
-    SDL_DestroyWindow( window );
+    ui.run();
 
     SDL_Quit();
 
