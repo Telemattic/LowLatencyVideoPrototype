@@ -4,6 +4,7 @@
 
 #include <sys/socket.h> /* for socket(), connect(), sendto(), and recvfrom() */
 #include <arpa/inet.h>  /* for sockaddr_in and inet_addr() */
+#include <unistd.h>
 
 #include <array>
 #include <sstream>
@@ -24,8 +25,6 @@ extern "C"
 #include <libavformat/avformat.h>
 #include <libavformat/avio.h>
 }
-
-#include "config.h"
 
 #define MAXRECVSTRING 2550
 
@@ -61,6 +60,7 @@ SDL_Rect ScaleAspect( const SDL_Rect& src, const SDL_Rect& dst )
 
 struct Frame {
 
+  uint32_t             numBytes = 0;
   std::vector<uint8_t> data;
 };
 
@@ -119,6 +119,7 @@ private:
   AVCodec*        m_codec    = nullptr;
   AVCodecContext* m_codecCtx = nullptr;
   AVFrame*        m_frame    = nullptr;
+  uint32_t        m_numBytes = 0;
 };
 
 Decoder::Decoder(uint16_t width, uint16_t height)
@@ -159,6 +160,8 @@ Decoder::operator()(uint8_t* data, size_t len)
   int gotFrame = 0;
   avcodec_decode_video2(m_codecCtx, m_frame, &gotFrame, &avpkt );
 
+  m_numBytes += len;
+
   if (0 == gotFrame)
     return {};
 
@@ -173,6 +176,9 @@ Decoder::operator()(uint8_t* data, size_t len)
   heights[2] = m_frame->height / 2;
       
   auto retval = std::make_unique<Frame>();
+  
+  retval->numBytes = m_numBytes;
+  m_numBytes = 0;
   {
     size_t n = 0;
     for (unsigned int i = 0; i != 3; ++i) {
@@ -197,20 +203,63 @@ Decoder::operator()(uint8_t* data, size_t len)
   return retval;
 }
 
+class UDPSocket {
+public:
+  explicit UDPSocket(uint16_t port);
+  ~UDPSocket();
+
+  size_t read(void* buf, size_t len);
+private:
+  int m_socket = -1;
+};
+
+UDPSocket::UDPSocket(uint16_t port)
+{
+  m_socket = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (m_socket < 0)
+      throw std::runtime_error("socket");
+
+  /* Construct bind structure */
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof addr);
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons(port);
+    
+  /* Bind to the broadcast port */
+  if (bind(m_socket, reinterpret_cast<const sockaddr *>(&addr), sizeof addr) < 0)
+    throw std::runtime_error("bind");
+}
+
+UDPSocket::~UDPSocket()
+{
+  ::close(m_socket);
+}
+
+size_t
+UDPSocket::read(void* data, size_t len)
+{
+  const auto x = ::recvfrom(m_socket, data, len, 0, nullptr, nullptr);
+  if (x < 0)
+    throw std::runtime_error("recvfrom");
+
+  return static_cast<size_t>(x);
+}
+
 class Reader {
 
 public:
   static int ThreadFunc(void*);
   
-  Reader(uint16_t w, uint16_t h, uint32_t frameEventNumber, FrameQueue&);
+  Reader(UDPSocket&, Decoder&, uint32_t frameEventNumber, FrameQueue&);
 
   void run();
 
 private:
-  Decoder        m_decoder;
+  UDPSocket&     m_socket;
+  Decoder&       m_decoder;
   const uint32_t m_frameEventNumber;
   FrameQueue&    m_frameQueue;
-  int            m_socket = -1;
 };
 
 int
@@ -220,28 +269,13 @@ Reader::ThreadFunc(void* arg)
   return 0;
 }
 
-Reader::Reader(uint16_t width, uint16_t height,
+Reader::Reader(UDPSocket& socket, Decoder& decoder,
 	       uint32_t frameEventNumber, FrameQueue& frameQueue)
-  : m_decoder(width, height)
+  : m_socket(socket)
+  , m_decoder(decoder)
   , m_frameEventNumber(frameEventNumber)
   , m_frameQueue(frameQueue)
 {
-  m_socket = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  if (m_socket < 0)
-      throw std::runtime_error("socket");
-
-  /* Construct bind structure */
-  struct sockaddr_in addr;
-  uint16_t broadcastPort = UDP_PORT_NUMBER;
-    
-  memset(&addr, 0, sizeof addr);
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  addr.sin_port = htons(broadcastPort);
-    
-  /* Bind to the broadcast port */
-  if (bind(m_socket, reinterpret_cast<const sockaddr *>(&addr), sizeof addr) < 0)
-    throw std::runtime_error("bind");
 }
 
 void
@@ -250,12 +284,10 @@ Reader::run()
   for (;;) {
 
     std::array<uint8_t, 2550> buf;
-    auto len = ::recvfrom(m_socket, buf.data(), buf.size(), 0, nullptr, nullptr);
-    if (len < 0)
-      throw std::runtime_error("recvfrom");
+    const auto len = m_socket.read(buf.data(), buf.size());
 
-    auto frame = m_decoder(buf.data(), len);
-    if (frame) {
+    if (auto frame = m_decoder(buf.data(), len)) {
+
       m_frameQueue.push(std::move(frame));
       
       SDL_Event event;
@@ -320,23 +352,35 @@ UI::~UI()
   SDL_DestroyWindow(m_window);
 }
 
+double now()
+{
+    timespec temp;
+    clock_gettime( CLOCK_MONOTONIC, &temp );
+
+    return (double)temp.tv_sec + ( (double)temp.tv_nsec / 1e9 );
+}
+
 void
 UI::run()
 {
+  double start = now();
+  int numFrames = 0;
+  int numBytes = 0;
+  
   bool running = true;
-  while( running ) {
+  while (running) {
 
     SDL_Event event;
     while (SDL_PollEvent(&event) ) {
 
-      switch ( event.type ) {
+      switch (event.type) {
 	
       case SDL_QUIT:
 	running = false;
 	break;
 
       case SDL_KEYUP:
-	if( event.key.keysym.sym == SDLK_ESCAPE )
+	if (event.key.keysym.sym == SDLK_ESCAPE)
 	  running = false;
 	break;
 
@@ -358,9 +402,23 @@ UI::run()
 	if (event.type == m_frameEventNumber) {
 
 	  auto frame = m_frameQueue.pop();
-	  std::cout << "frame: data.size()=" << frame->data.size() << std::endl;
 	  SDL_UpdateTexture(m_texture, nullptr, frame->data.data(),
-			    m_width * SDL_BYTESPERPIXEL(SDL_PIXELFORMAT_IYUV) );
+			    m_width * SDL_BYTESPERPIXEL(SDL_PIXELFORMAT_IYUV));
+
+	  ++numFrames;
+	  numBytes += frame->numBytes;
+	  auto elapsed = now() - start;
+	  if (numFrames > 30 || elapsed > 5.) {
+	    double fps = numFrames / elapsed;
+	    double bytesPerFrame = numBytes / static_cast<double>(numFrames);
+	    double bytesPerSec = numBytes / elapsed;
+	    std::cout << "fps=" << fps
+		      << " bytes/frame=" << bytesPerFrame
+		      << " bytes/sec=" << bytesPerSec << std::endl;
+	    numFrames = 0;
+	    numBytes = 0;
+	    start = now();
+	  }
         }
       }
 
@@ -370,7 +428,7 @@ UI::run()
       SDL_Rect src{0, 0, m_width, m_height};
       SDL_Rect s = ScaleAspect(src, m_winRect);
 
-      SDL_SetRenderDrawColor(m_renderer, 255, 0, 0, 0 );
+      SDL_SetRenderDrawColor(m_renderer, 255, 0, 0, 0);
       SDL_RenderFillRect(m_renderer, &s);
 
       SDL_RenderCopy(m_renderer, m_texture, nullptr, &s);
@@ -385,22 +443,29 @@ UI::run()
 int
 main( int argc, char *argv[] )
 {
-    if (SDL_Init(SDL_INIT_VIDEO) < 0)
-        THROW( "Couldn't initialize SDL: " << SDL_GetError() );
+  uint16_t cameraW = 320;
+  uint16_t cameraH = 240;
+  uint16_t port = 12345;
 
-    const auto frameEventNumber{SDL_RegisterEvents(1)};
-    FrameQueue frameQueue;
+  UDPSocket socket{port};
+  Decoder   decoder{cameraW, cameraH};
+  
+  if (SDL_Init(SDL_INIT_VIDEO) < 0)
+    THROW( "Couldn't initialize SDL: " << SDL_GetError() );
+
+  const auto frameEventNumber{SDL_RegisterEvents(1)};
+  FrameQueue frameQueue;
     
-    Reader reader{WIDTH, HEIGHT, frameEventNumber, frameQueue};
-    UI ui{WIDTH, HEIGHT, frameEventNumber, frameQueue};
+  Reader reader{socket, decoder, frameEventNumber, frameQueue};
+  UI ui{cameraW, cameraH, frameEventNumber, frameQueue};
 
-    SDL_Thread* ft = SDL_CreateThread(Reader::ThreadFunc,
-				      "ReadThread",
-				      &reader );
+  SDL_Thread* ft = SDL_CreateThread(Reader::ThreadFunc,
+				    "ReadThread",
+				    &reader );
 
-    ui.run();
+  ui.run();
 
-    SDL_Quit();
+  SDL_Quit();
 
-    return 0;
+  return 0;
 }
