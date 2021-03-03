@@ -11,6 +11,7 @@
 #include <iostream>
 #include <vector>
 #include <fstream>
+#include <memory>
 #include <queue>
 
 #include <SDL.h>
@@ -61,157 +62,195 @@ SDL_Rect ScaleAspect( const SDL_Rect& src, const SDL_Rect& dst )
     return ret;
 }
 
+struct Frame {
 
-
-struct FrameQueue
-{
-    FrameQueue()
-    {
-        eventNumber = SDL_RegisterEvents(1);
-        mutex = SDL_CreateMutex();
-    }
-    ~FrameQueue()
-    {
-        SDL_DestroyMutex( mutex );
-    }
-
-    void Lock()
-    {
-        SDL_mutexP( mutex );
-    }
-
-    void Unlock()
-    {
-        SDL_mutexV( mutex );
-    }
-
-    Uint32 eventNumber;
-    queue< vector< unsigned char > > frames;
-
-private:
-    SDL_mutex* mutex;
+  std::vector<uint8_t> data;
 };
 
-
-class data_source_packetizer: public data_source
+class FrameQueue
 {
 public:
-    void write( const uint8_t * data, size_t bytes )
-    {
-        packets.push_back( std::vector< uint8_t >( data, data + bytes ) );
-    }
+  FrameQueue();
+  ~FrameQueue();
 
-    std::deque< std::vector< uint8_t > > packets;
+  void push(std::unique_ptr<Frame> f);
+  std::unique_ptr<Frame> pop();
+
+private:
+  std::deque<std::unique_ptr<Frame>> m_deque;
+  SDL_mutex* m_mutex;
 };
 
-
-int FrameThread( void* ptr )
+FrameQueue::FrameQueue()
+  : m_mutex(SDL_CreateMutex())
 {
-  FrameQueue& fq = *reinterpret_cast<FrameQueue*>(ptr);
+}
 
-    av_register_all();
-    avcodec_register_all();
+FrameQueue::~FrameQueue()
+{
+  SDL_DestroyMutex(m_mutex);
+}
 
-    AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
-    if( codec == NULL )
-        cout << "bad codec" << endl;
+void
+FrameQueue::push(std::unique_ptr<Frame> f)
+{
+  SDL_mutexP(m_mutex);
+  m_deque.push_back(std::move(f));
+  SDL_mutexV(m_mutex);
+}
 
-    AVCodecContext* codecCtx = avcodec_alloc_context3( codec );
-    if( codecCtx == NULL )
-        cout << "bad codecCtx" << endl;
+std::unique_ptr<Frame>
+FrameQueue::pop()
+{
+  SDL_mutexP(m_mutex);
+  std::unique_ptr<Frame> retval(m_deque.begin()->release());
+  m_deque.pop_front();
+  SDL_mutexV(m_mutex);
+  return retval;
+}
 
-    codecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
-    codecCtx->width = WIDTH;
-    codecCtx->height = HEIGHT;
-    if( avcodec_open2( codecCtx, codec, NULL ) < 0 )
-        cout << "couldn't open codec" << endl;
+class Decoder {
 
-    if( codecCtx->time_base.num > 1000 && codecCtx->time_base.den == 1 )
-        codecCtx->time_base.den = 1000;
+public:
+  Decoder();
 
-    AVFrame* frame = av_frame_alloc();
-    if( frame == NULL )
-        cout << "bad frame" << endl;
+  std::unique_ptr<Frame> operator()(uint8_t *data, size_t len);
 
-    int sock = 0;
-    if ((sock = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0)
+private:
+  AVCodec*        m_codec    = nullptr;
+  AVCodecContext* m_codecCtx = nullptr;
+  AVFrame*        m_frame    = nullptr;
+};
+
+Decoder::Decoder()
+{
+  m_codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+  if (!m_codec)
+    throw std::runtime_error("avcodec_find_decoder");
+
+  m_codecCtx = avcodec_alloc_context3(m_codec);
+  if (!m_codecCtx)
+    throw std::runtime_error("avcodec_alloc_context3");
+
+  m_codecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
+  m_codecCtx->width = WIDTH;
+  m_codecCtx->height = HEIGHT;
+  if (avcodec_open2(m_codecCtx, m_codec, nullptr) < 0)
+    throw std::runtime_error("avcodec_open2");
+
+  if (m_codecCtx->time_base.num > 1000 && m_codecCtx->time_base.den == 1)
+    m_codecCtx->time_base.den = 1000;
+
+  m_frame = av_frame_alloc();
+  if (!m_frame)
+    throw std::runtime_error("av_frame_alloc");
+}
+
+std::unique_ptr<Frame>
+Decoder::operator()(uint8_t* data, size_t len)
+{
+  // Decode video frame
+  AVPacket avpkt;
+  av_init_packet( &avpkt );
+  avpkt.data = data;
+  avpkt.size = len;
+
+  int gotFrame = 0;
+  avcodec_decode_video2(m_codecCtx, m_frame, &gotFrame, &avpkt );
+
+  if (0 == gotFrame)
+    return {};
+
+  std::array<unsigned int, 3> widths;
+  widths[0] = m_frame->width;
+  widths[1] = m_frame->width / 2;
+  widths[2] = m_frame->width / 2;
+      
+  std::array<unsigned int, 3> heights;
+  heights[0] = m_frame->height;
+  heights[1] = m_frame->height / 2;
+  heights[2] = m_frame->height / 2;
+      
+  auto retval = std::make_unique<Frame>();
+  {
+    size_t n = 0;
+    for (unsigned int i = 0; i != 3; ++i) {
+      n += widths[i] * heights[i];
+    }
+    retval->data.reserve(n);
+  }
+
+  for ( unsigned int plane = 0; plane < 3; ++plane ){
+
+    auto base = m_frame->data[plane];
+    const auto h = heights[plane];
+    const auto w = widths[plane];
+	
+    for ( unsigned int y = 0; y != h; ++y ) {
+
+      retval->data.insert(retval->data.end(), base, base + w);
+      base += m_frame->linesize[plane];
+    }
+  }
+
+  return retval;
+}
+
+class ReadThread {
+
+public:
+  ReadThread(uint32_t frameEventNumber, FrameQueue& frameQueue);
+
+  void run();
+
+private:
+  const uint32_t m_frameEventNumber;
+  FrameQueue&    m_frameQueue;
+  int            m_socket = -1;
+  Decoder        m_decoder;
+};
+
+ReadThread::ReadThread(uint32_t frameEventNumber, FrameQueue& frameQueue)
+  : m_frameEventNumber(frameEventNumber)
+  , m_frameQueue(frameQueue)
+{
+  m_socket = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (m_socket < 0)
       throw std::runtime_error("socket");
 
-    /* Construct bind structure */
-    struct sockaddr_in broadcastAddr;
-    uint16_t broadcastPort = UDP_PORT_NUMBER;
+  /* Construct bind structure */
+  struct sockaddr_in addr;
+  uint16_t broadcastPort = UDP_PORT_NUMBER;
     
-    memset(&broadcastAddr, 0, sizeof(broadcastAddr));   /* Zero out structure */
-    broadcastAddr.sin_family = AF_INET;                 /* Internet address family */
-    broadcastAddr.sin_addr.s_addr = htonl(INADDR_ANY);  /* Any incoming interface */
-    broadcastAddr.sin_port = htons(broadcastPort);      /* Broadcast port */
+  memset(&addr, 0, sizeof addr);
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons(broadcastPort);
     
-    /* Bind to the broadcast port */
-    if (bind(sock, (struct sockaddr *) &broadcastAddr, sizeof(broadcastAddr)) < 0)
-      throw std::runtime_error("bind");
-    
-    for (;;) {
+  /* Bind to the broadcast port */
+  if (bind(m_socket, reinterpret_cast<const sockaddr *>(&addr), sizeof addr) < 0)
+    throw std::runtime_error("bind");
+}
 
-      std::array<uint8_t, MAXRECVSTRING> buf;
-      auto recvlen = recvfrom(sock, buf.data(), buf.size(), 0, nullptr, nullptr);
-      if (recvlen < 0)
-	throw std::runtime_error("recvfrom");
+void
+ReadThread::run()
+{
+  for (;;) {
 
-      printf("Received: %i bytes\n", recvlen);
-      // Decode video frame
-      AVPacket avpkt;
-      av_init_packet( &avpkt );
-      avpkt.data = buf.data();
-      avpkt.size = recvlen;
+    std::array<uint8_t, 2550> buf;
+    auto len = ::recvfrom(m_socket, buf.data(), buf.size(), 0, nullptr, nullptr);
+    if (len < 0)
+      throw std::runtime_error("recvfrom");
 
-      int gotFrame = 0;
-      avcodec_decode_video2( codecCtx, frame, &gotFrame, &avpkt );
-
-      if (gotFrame == 0)
-	continue;
-
-      std::array<unsigned int, 3> widths;
-      widths[0] = frame->width;
-      widths[1] = frame->width / 2;
-      widths[2] = frame->width / 2;
+    auto frame = m_decoder(buf.data(), len);
+    if (frame) {
+      m_frameQueue.push(std::move(frame));
       
-      std::array<unsigned int, 3> heights;
-      heights[0] = frame->height;
-      heights[1] = frame->height / 2;
-      heights[2] = frame->height / 2;
-      
-      std::vector<unsigned char> fbuf;
-      {
-	size_t n = 0;
-	for (unsigned int i = 0; i != 3; ++i) {
-	  n += widths[i] * heights[i];
-	}
-	fbuf.reserve(n);
-      }
-
-      for ( unsigned int plane = 0; plane < 3; ++plane ){
-
-	auto base = frame->data[plane];
-	const auto h = heights[plane];
-	const auto w = widths[plane];
-	
-	for ( unsigned int y = 0; y != h; ++y ) {
-
-	  fbuf.insert(fbuf.end(), base, base + w);
-	  base += frame->linesize[plane];
-	}
-      }
-
-      fq.Lock();
-      fq.frames.push( fbuf );
-      fq.Unlock();
-
       SDL_Event event;
-      event.type = fq.eventNumber;
-      SDL_PushEvent( &event );
+      event.type = m_frameEventNumber;
+      SDL_PushEvent(&event);
     }
-
-    return 0;
+  }
 }
 
 int
@@ -252,8 +291,16 @@ main( int argc, char *argv[] )
     if( !tex )
         THROW( "Couldn't create texture: " << SDL_GetError() );
 
-    FrameQueue fq;
-    SDL_Thread* ft = SDL_CreateThread( FrameThread, "FrameThread", (void*)&fq );
+    const auto frameEventNumber{SDL_RegisterEvents(1)};
+    FrameQueue frameQueue;
+    ReadThread readThread{frameEventNumber, frameQueue};
+    
+    SDL_Thread* ft = SDL_CreateThread(
+				      [](void* arg) {
+					reinterpret_cast<ReadThread*>(arg)->run();
+					return 0; },
+				      "ReadThread",
+				      &readThread );
 
     bool running = true;
     while( running )
@@ -290,13 +337,11 @@ main( int argc, char *argv[] )
                 break;
             }
 
-            if( event.type == fq.eventNumber )
-            {
-                fq.Lock();
-                vector< unsigned char > frame = fq.frames.front();
-                fq.frames.pop();
-                fq.Unlock();
-                SDL_UpdateTexture(tex, NULL, &frame[0], WIDTH * SDL_BYTESPERPIXEL(SDL_PIXELFORMAT_IYUV) );
+            if (event.type == frameEventNumber) {
+
+	      auto frame = frameQueue.pop();
+	      SDL_UpdateTexture(tex, nullptr, frame->data.data(),
+				WIDTH * SDL_BYTESPERPIXEL(SDL_PIXELFORMAT_IYUV) );
             }
         }
 
