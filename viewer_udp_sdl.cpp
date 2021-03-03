@@ -26,9 +26,6 @@ extern "C"
 }
 
 #include "config.h"
-#include "data_source.h"
-#include "x264_destreamer.h"
-
 
 #define MAXRECVSTRING 2550
 

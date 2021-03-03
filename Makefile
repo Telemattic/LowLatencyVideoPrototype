@@ -51,7 +51,7 @@ viewer_stdin: viewer_stdin.o data_source_ocv_avcodec.o x264_destreamer.o packet_
 viewer_sdl: viewer_sdl.o x264_destreamer.o packet_server.o
 	g++ $^ -o $@ $(LDFLAGS)
 
-viewer_udp_sdl: viewer_udp_sdl.o x264_destreamer.o packet_server.o
+viewer_udp_sdl: viewer_udp_sdl.o
 	g++ $^ -o $@ $(LDFLAGS)
 
 viewer_udp_ocv: viewer_udp_ocv.o data_source_ocv_avcodec.o
