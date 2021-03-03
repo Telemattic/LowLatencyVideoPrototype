@@ -1,5 +1,12 @@
+# some places have OpenCV installed as "opencv4", while others have it as "opencv"
+ifneq ($(shell pkg-config --silence-errors --cflags opencv4),)
+OPENCV := opencv4
+else
+OPENCV := opencv
+endif
+
 # pkg-config packages list
-PKGS := x264 libavutil libavformat libavcodec libswscale libv4l2 opencv4 sdl2 SDL_net
+PKGS := x264 libavutil libavformat libavcodec libswscale libv4l2 sdl2 SDL_net $(OPENCV)
 PKG_CFLAGS := $(shell pkg-config --cflags $(PKGS))
 PKG_LDFLAGS := $(shell pkg-config --libs $(PKGS))
 
