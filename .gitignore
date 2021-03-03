@@ -13,3 +13,4 @@ viewer_sdl
 viewer_stdin
 viewer_udp_ocv
 control
+viewer_udp_sdl

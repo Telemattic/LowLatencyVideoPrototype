@@ -16,7 +16,7 @@ extern "C"
 #include "data_source_ocv_avcodec.h"
 
 //#include "opencv/highgui.h"
-#include "opencv2/highgui/highgui_c.h"
+#include <opencv2/highgui/highgui_c.h>
 
 data_source_ocv_avcodec::data_source_ocv_avcodec(const char * name)
 {

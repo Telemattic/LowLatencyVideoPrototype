@@ -1,5 +1,12 @@
+# some places have OpenCV installed as "opencv4", while others have it as "opencv"
+ifneq ($(shell pkg-config --silence-errors --cflags opencv4),)
+OPENCV := opencv4
+else
+OPENCV := opencv
+endif
+
 # pkg-config packages list
-PKGS := x264 libavutil libavformat libavcodec libswscale libv4l2 opencv sdl2 SDL_net
+PKGS := x264 libavutil libavformat libavcodec libswscale libv4l2 sdl2 SDL_net $(OPENCV)
 PKG_CFLAGS := $(shell pkg-config --cflags $(PKGS))
 PKG_LDFLAGS := $(shell pkg-config --libs $(PKGS))
 
@@ -22,7 +29,8 @@ ALL_BUILDS = \
 	test_data_source_ocv\
 	viewer_stdin\
 	viewer_sdl\
-    viewer_udp_ocv
+	viewer_udp_ocv \
+	viewer_udp_sdl
 
 all: .depend $(ALL_BUILDS)
 
@@ -37,37 +45,40 @@ control: control.o
 	g++ $? -o $@ $(LDFLAGS)
 
 encoder: encoder.o
-	g++ $? $(CFLAGS) -o $@ $(LDFLAGS)
+	g++ $^ $(CFLAGS) -o $@ $(LDFLAGS)
 
 encoder_h264: encoder_h264.o
-	g++ $? -o $@ $(LDFLAGS)
+	g++ $^ -o $@ $(LDFLAGS)
 
 encoder_udp: encoder_udp.o
-	g++ $? -o $@ $(LDFLAGS)
+	g++ $^ -o $@ $(LDFLAGS)
 
 v4l2_enumerate: v4l2_enumerate.o
-	g++ $? -o $@ $(LDFLAGS)
+	g++ $^ -o $@ $(LDFLAGS)
 
 viewer_stdin: viewer_stdin.o data_source_ocv_avcodec.o x264_destreamer.o packet_server.o data_source_stdio_info.o
-	g++ $? -o $@ $(LDFLAGS)
+	g++ $^ -o $@ $(LDFLAGS)
 
 viewer_sdl: viewer_sdl.o x264_destreamer.o packet_server.o
-	g++ $? -o $@ $(LDFLAGS)
+	g++ $^ -o $@ $(LDFLAGS)
 
-viewer_udp_ocv: viewer_udp_ocv.o x264_destreamer.o packet_server.o data_source_ocv_avcodec.o data_source_stdio_info.o
-	g++ $? -o $@ $(LDFLAGS)
+viewer_udp_sdl: viewer_udp_sdl.o
+	g++ $^ -o $@ $(LDFLAGS)
+
+viewer_udp_ocv: viewer_udp_ocv.o data_source_ocv_avcodec.o
+	g++ $^ -o $@ $(LDFLAGS)
 
 test_data_source: test_data_source.o packet_server.o data_source_stdio.o data_source_stdio_info.o data_source_file.o
-	g++ $? -o $@ $(LDFLAGS)
+	g++ $^ -o $@ $(LDFLAGS)
 
 test_data_source_tcp_server: test_data_source_tcp_server.o packet_server.o data_source_stdio_info.o data_source_tcp_server.o
-	g++ $? -o $@ $(LDFLAGS)
+	g++ $^ -o $@ $(LDFLAGS)
 
 test_data_source_udp: test_data_source_udp.o packet_server.o data_source_stdio_info.o data_source_udp.o data_source_stdio.o
-	g++ $? -o $@ $(LDFLAGS)
+	g++ $^ -o $@ $(LDFLAGS)
 
 test_data_source_ocv: test_data_source_ocv.o packet_server.o data_source_stdio_info.o data_source_ocv_avcodec.o
-	g++ $? -o $@ $(LDFLAGS)
+	g++ $^ -o $@ $(LDFLAGS)
 
 clean:
-	rm -f *.o $(ALL_BUILDS)
+	rm -f *.o .depend $(ALL_BUILDS)
