@@ -11,8 +11,6 @@
 
 #include "config.h"
 #include "data_source_ocv_avcodec.h"
-#include "data_source_stdio_info.h"
-#include "x264_destreamer.h"
 
 using namespace std;
 
