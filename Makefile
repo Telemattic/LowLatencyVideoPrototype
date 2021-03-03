@@ -18,6 +18,7 @@ LDFLAGS := $(PKG_LDFLAGS) $(ADD_LDFLAGS) $(LDFLAGS)
 CXXFLAGS := $(CFLAGS)
 
 ALL_BUILDS = \
+	control \
 	encoder\
 	encoder_udp\
 	encoder_h264\
@@ -39,6 +40,9 @@ SOURCES=`ls *.cpp`
 	fastdep $(SOURCES) > .depend
 
 -include .depend
+
+control: control.o
+	g++ $? -o $@ $(LDFLAGS)
 
 encoder: encoder.o
 	g++ $^ $(CFLAGS) -o $@ $(LDFLAGS)
