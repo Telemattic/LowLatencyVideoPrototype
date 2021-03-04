@@ -9,9 +9,11 @@
 #include <libv4l2.h>
 
 #include <cstring>
-#include <queue>
+#include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 
 #define THROW( d ) \
@@ -22,6 +24,296 @@
 	throw std::runtime_error( oss.str() ); \
 	} \
 
+using Buffer = std::pair<char*, size_t>;
+
+class BufferFactory {
+
+public:
+  virtual ~BufferFactory() {};
+  virtual Buffer allocate(size_t length, int64_t offset) = 0;
+};
+
+class HeapBufferFactory : public BufferFactory {
+
+public:
+  HeapBufferFactory();
+  ~HeapBufferFactory() override;
+  
+  Buffer allocate(size_t length, int64_t offset) override;
+
+private:
+  std::vector<Buffer> m_buffers;
+};
+
+HeapBufferFactory::HeapBufferFactory()
+{
+}
+
+HeapBufferFactory::~HeapBufferFactory()
+{
+  for (const auto& i : m_buffers) {
+    delete [] i.first;
+  }
+}
+
+Buffer
+HeapBufferFactory::allocate(size_t length, int64_t offset)
+{
+  auto p = new char[length];
+  m_buffers.push_back(Buffer{p, length});
+  return m_buffers.back();
+}
+
+class MMapBufferFactory : public BufferFactory {
+public:
+  explicit MMapBufferFactory(int fd);
+  ~MMapBufferFactory() override;
+
+  Buffer allocate(size_t length, int64_t offset) override;
+
+private:
+  const int            m_fd;
+  std::vector<Buffer>  m_buffers;
+};
+
+MMapBufferFactory::MMapBufferFactory(int fd)
+  : m_fd(fd)
+{
+}
+
+MMapBufferFactory::~MMapBufferFactory()
+{
+  for (const auto& i : m_buffers) {
+    v4l2_munmap(i.first, i.second);
+  }
+}
+
+Buffer
+MMapBufferFactory::allocate(size_t length, int64_t offset)
+{
+  auto p = v4l2_mmap(nullptr, length, PROT_READ|PROT_WRITE, MAP_SHARED, m_fd, offset);
+  if (MAP_FAILED == p)
+    throw std::runtime_error("v4l2_mmap");
+
+  m_buffers.push_back(Buffer{reinterpret_cast<char*>(p), length});
+  return m_buffers.back();
+}
+ 
+class Capture {
+public:
+  virtual ~Capture() {}
+
+  virtual void   startCapture(size_t numBuffers, size_t imageSize) = 0;
+  virtual void   stopCapture() = 0;
+  
+  virtual Buffer lockFrame() = 0;
+  virtual void   unlockFrame() = 0;
+
+protected:
+  std::vector<Buffer> m_buffers;
+};
+
+class ReadWriteCapture : public Capture {
+
+public:
+  explicit ReadWriteCapture(int fd);
+  ~ReadWriteCapture() override;
+
+  void startCapture(size_t numBuffers, size_t sizeImage) override;
+  void stopCapture() override;
+
+  Buffer lockFrame() override;
+  void   unlockFrame() override;
+
+private:
+  const int m_fd;
+  std::unique_ptr<BufferFactory>  m_bufferFactory;
+};
+
+ReadWriteCapture::ReadWriteCapture(int fd)
+  : m_fd(fd)
+  , m_bufferFactory(std::make_unique<HeapBufferFactory>())
+{
+}
+
+ReadWriteCapture::~ReadWriteCapture()
+{
+}
+
+void
+ReadWriteCapture::startCapture(size_t numBuffers, size_t imageSize)
+{
+  m_buffers.reserve(1);
+  m_buffers.push_back(m_bufferFactory->allocate(imageSize, 0));
+}
+
+void
+ReadWriteCapture::stopCapture()
+{
+}
+
+Buffer
+ReadWriteCapture::lockFrame()
+{
+  auto bytesUsed = v4l2_read(m_fd, m_buffers[0].first, m_buffers[0].second);
+
+  if (bytesUsed < 0) {
+
+    if (errno != EAGAIN && errno != EIO)
+      THROW( "read() error" );
+  }
+
+  return Buffer{m_buffers[0].first, static_cast<size_t>(bytesUsed)};
+}
+
+void
+ReadWriteCapture::unlockFrame()
+{
+  // nop
+}
+
+class StreamingCapture : public Capture {
+
+public:
+  StreamingCapture(int fd, v4l2_memory memory);
+  ~StreamingCapture() override;
+
+  void startCapture(size_t numBuffers, size_t imageSize) override;
+  void stopCapture() override;
+
+  Buffer lockFrame() override;
+  void unlockFrame() override;
+
+private:
+  static void xioctl(int fd, int request, void* arg);
+  
+  const int         m_fd;
+  const v4l2_memory m_memory;
+  v4l2_buffer       m_lockedBuffer;
+  std::unique_ptr<BufferFactory>  m_bufferFactory;
+};
+
+void
+StreamingCapture::xioctl(int fd, int request, void* arg)
+{
+  int ret = 0;
+  do {
+    ret = v4l2_ioctl( fd, request, arg );
+  }
+  while (ret == -1 && ( (errno == EINTR) || (errno == EAGAIN) ));
+
+  if (ret == -1)
+    throw std::runtime_error("ioctl");
+}
+
+StreamingCapture::StreamingCapture(int fd, v4l2_memory memory)
+  : m_fd(fd)
+  , m_memory(memory)
+{
+  if (V4L2_MEMORY_MMAP == memory)
+    m_bufferFactory = std::make_unique<MMapBufferFactory>(m_fd);
+  else
+    m_bufferFactory = std::make_unique<HeapBufferFactory>();
+}
+
+StreamingCapture::~StreamingCapture()
+{
+}
+
+void
+StreamingCapture::startCapture(size_t numBuffers, size_t imageSize)
+{
+  // request buffers
+  v4l2_requestbuffers req;
+  memset(&req, 0, sizeof(req));
+  req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  req.memory = m_memory;
+  req.count = numBuffers;
+  
+  xioctl(m_fd, VIDIOC_REQBUFS, &req);
+
+  std::cout << "allocating " << req.count << " buffers" << std::endl;
+
+  m_buffers.resize(req.count);
+    
+  if (V4L2_MEMORY_USERPTR == m_memory) {
+
+    for (auto& i : m_buffers) {
+      i = m_bufferFactory->allocate(imageSize, 0);
+    }
+  }
+  else {
+
+    // mmap buffers
+    for (size_t i = 0; i != m_buffers.size(); ++i) {
+
+      v4l2_buffer buf;
+      memset( &buf, 0, sizeof(buf) );
+      buf.type    = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+      buf.memory  = V4L2_MEMORY_MMAP;
+      buf.index   = i;
+      xioctl(m_fd, VIDIOC_QUERYBUF, &buf);
+
+      m_buffers[i] = m_bufferFactory->allocate(buf.length, buf.m.offset);
+
+      std::cout << "buffer[" << i << "]: addr=" << std::hex << (unsigned long)m_buffers[i].first
+		<< std::dec << " length=" << buf.length
+		<< " offset=" << buf.m.offset << std::endl;
+    }
+  }
+
+  // queue buffers
+  for (size_t i = 0; i != m_buffers.size(); ++i) {
+
+    v4l2_buffer buf;
+    memset(&buf, 0, sizeof(buf));
+    buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.index  = i;
+    buf.memory = m_memory;
+    
+    if (V4L2_MEMORY_USERPTR == m_memory) {
+
+      buf.m.userptr = (unsigned long)m_buffers[i].first;
+      buf.length    = m_buffers[i].second;
+    }
+
+    xioctl(m_fd, VIDIOC_QBUF, &buf);
+  }
+
+  // start streaming
+  v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  xioctl(m_fd, VIDIOC_STREAMON, &type);
+}
+
+void
+StreamingCapture::stopCapture()
+{
+  // stop streaming
+  v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  xioctl(m_fd, VIDIOC_STREAMOFF, &type);
+}
+
+Buffer
+StreamingCapture::lockFrame()
+{
+  memset(&m_lockedBuffer, 0, sizeof(m_lockedBuffer));
+  m_lockedBuffer.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  m_lockedBuffer.memory = m_memory;
+
+  if (-1 == v4l2_ioctl(m_fd, VIDIOC_DQBUF, &m_lockedBuffer)) {
+
+    if (errno != EAGAIN && errno != EIO)
+      THROW( "ioctl(VIDIOC_DQBUF) error" );
+  }
+
+  return Buffer{m_buffers[m_lockedBuffer.index].first, m_lockedBuffer.bytesused};
+}
+
+void
+StreamingCapture::unlockFrame()
+{
+  xioctl(m_fd, VIDIOC_QBUF, &m_lockedBuffer);
+}
 
 // wraps a V4L2_CAP_VIDEO_CAPTURE fd
 class VideoCapture
@@ -66,6 +358,16 @@ public:
 
         mCapturing = false;
         mIsLocked = false;
+
+#if 1	
+	if (READ == mIO) {
+	  m_capture = std::make_unique<ReadWriteCapture>(mFd);
+	}
+	else {
+	  auto memory = (MMAP == mIO) ? V4L2_MEMORY_MMAP : V4L2_MEMORY_USERPTR;
+	  m_capture = std::make_unique<StreamingCapture>(mFd, memory);
+	}
+#endif
     }
 
     ~VideoCapture()
@@ -102,6 +404,11 @@ public:
             fmt.sizeimage = min;
 
         const unsigned int bufCount = 4;
+
+	if (m_capture) {
+	  m_capture->startCapture(bufCount, fmt.sizeimage);
+	  return;
+	}
 
         if( mIO == READ )
         {
@@ -178,6 +485,11 @@ public:
         if( !mCapturing ) return;
         mCapturing = false;
 
+	if (m_capture) {
+	  m_capture->stopCapture();
+	  return;
+	}
+
         if( mIO == READ )
         {
             delete[] mBuffers[0].start;
@@ -239,6 +551,13 @@ public:
             break;
         }
 
+	if (m_capture) {
+	  auto f = m_capture->lockFrame();
+	  mLockedFrame.start = f.first;
+	  mLockedFrame.length = f.second;
+	  return mLockedFrame;
+	}
+
         if( mIO == READ )
         {
             if( -1 == v4l2_read( mFd, mBuffers[0].start, mBuffers[0].length) )
@@ -293,6 +612,11 @@ public:
     {
         if( !mIsLocked ) return;
         mIsLocked = false;
+
+	if (m_capture) {
+	  m_capture->unlockFrame();
+	  return;
+	}
 
         if( mIO == READ ) return;
 
@@ -515,6 +839,7 @@ private:
     v4l2_buffer mLockedBuffer;
 
     std::vector< Buffer > mBuffers;
+  std::unique_ptr<Capture> m_capture;
 };
 
 #endif
