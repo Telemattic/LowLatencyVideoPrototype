@@ -114,7 +114,97 @@ string TS( const T& val )
     return oss.str();
 }
 
+class Scaler {
 
+public:
+  Scaler(const v4l2_pix_format& srcFormat, uint32_t dstWidth, uint32_t dstHeight);
+  ~Scaler();
+
+  void operator()(const uint8_t* src, x264_image_t& dst);
+
+private:
+  const uint32_t    m_srcWidth;
+  const uint32_t    m_srcHeight;
+  const uint32_t    m_dstWidth;
+  const uint32_t    m_dstHeight;
+  std::vector<int>  m_srcOffsets;
+  std::vector<int>  m_srcStrides;
+  SwsContext*       m_swsCtx = nullptr;
+};
+
+Scaler::Scaler(const v4l2_pix_format& src, uint32_t dstWidth, uint32_t dstHeight)
+  : m_srcWidth(src.width)
+  , m_srcHeight(src.height)
+  , m_dstWidth(dstWidth)
+  , m_dstHeight(dstHeight)
+{
+  if (src.pixelformat == V4L2_PIX_FMT_YUV420) {
+
+    // planar format
+    m_srcOffsets.push_back( 0 );
+    m_srcOffsets.push_back( m_srcOffsets.back() + ( src.height * src.bytesperline ) );
+    m_srcOffsets.push_back( m_srcOffsets.back() + ( (src.height/2) * (src.bytesperline/2) ) );
+
+    m_srcStrides.push_back( src.bytesperline );
+    m_srcStrides.push_back( src.bytesperline/2 );
+    m_srcStrides.push_back( src.bytesperline/2 );
+  }
+  else {
+
+    // assume packed format
+    m_srcOffsets.push_back( 0 );
+    m_srcStrides.push_back( src.bytesperline );
+  }
+
+  AVPixelFormat srcFormat;
+
+  switch (src.pixelformat) {
+  case V4L2_PIX_FMT_YUYV:
+    srcFormat = AV_PIX_FMT_YUYV422;
+    break;
+  case V4L2_PIX_FMT_YUV420:
+    srcFormat = AV_PIX_FMT_YUV420P;
+    break;
+  case V4L2_PIX_FMT_RGB24:
+    srcFormat = AV_PIX_FMT_RGB24;
+    break;
+  case V4L2_PIX_FMT_BGR24:
+    srcFormat =  AV_PIX_FMT_BGR24;
+    break;
+  default:
+    throw std::runtime_error("unknown pixel format");
+  }
+
+  AVPixelFormat dstFormat = AV_PIX_FMT_YUV420P;
+
+  std::cout << "Scaler: src=" << m_srcWidth << 'x' << m_srcHeight << " (format="
+	    << srcFormat << ") dst=" << m_dstWidth << 'x' << m_dstHeight
+	    << " (format=" << dstFormat << ')' << std::endl;
+
+  m_swsCtx = sws_getContext(m_srcWidth, m_srcHeight, srcFormat,
+			    m_dstWidth, m_dstHeight, dstFormat,
+			    SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+  if (!m_swsCtx)
+    throw std::runtime_error("sws_getContext");
+}
+
+Scaler::~Scaler()
+{
+  sws_freeContext(m_swsCtx);
+}
+
+void
+Scaler::operator()(const uint8_t* src, x264_image_t& dst)
+{
+  std::vector<const uint8_t*> srcPlanes;
+  srcPlanes.reserve(m_srcOffsets.size());
+  for (auto offset : m_srcOffsets)
+    srcPlanes.push_back(src + offset);
+  
+  sws_scale(m_swsCtx,
+	    srcPlanes.data(), m_srcStrides.data(), 0, m_srcHeight,
+	    dst.plane, dst.i_stride);
+}
 
 void GetLayout( const v4l2_pix_format& fmt, vector< int >& offsets, vector< int >& strides )
 {
@@ -328,6 +418,7 @@ int main( int argc, char** argv )
         exit( EXIT_FAILURE );
     }
 
+    Scaler scaler(fmt, outputWidth, outputHeight);
 
     // Initialize encoder
     x264_param_t param;
@@ -426,6 +517,7 @@ int main( int argc, char** argv )
 
         prv = now();
 
+	#if 0
         // apply plane offsets
         for( size_t i = 0; i < planes.size(); ++i )
             planes[i] = ptr + offsets[i];
@@ -440,6 +532,9 @@ int main( int argc, char** argv )
             pic_in.img.plane,
             pic_in.img.i_stride
             );
+	#endif
+
+	scaler(ptr, pic_in.img);
 
         acc["2 - scale(ms):     "].push_back( ( now() - prv ) * 1000.0 );
 
