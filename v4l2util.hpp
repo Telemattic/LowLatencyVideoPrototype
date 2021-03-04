@@ -20,5 +20,6 @@ namespace V4L2Util
   
   void ioctl_throw(int fd, unsigned long int request, void* arg);
   int  ioctl_nothrow(int fd, unsigned long int request, void* arg);
+  void ioctl_raise(unsigned long int request, int err);
   
 } // namespace

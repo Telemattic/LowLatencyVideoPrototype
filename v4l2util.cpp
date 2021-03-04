@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <stdexcept>
+#include <sstream>
 #include <errno.h>
 
 std::vector<v4l2_fmtdesc>
@@ -20,7 +21,7 @@ V4L2Util::getFormats(int fd)
     if (auto ret = ioctl_nothrow(fd, VIDIOC_ENUM_FMT, &fmt)) {
       if (EINVAL == ret)
 	break;
-      throw std::runtime_error("v4l2_ioctl");
+      ioctl_raise(VIDIOC_ENUM_FMT, ret);
     }
 
     fmts.push_back(fmt);
@@ -53,7 +54,7 @@ V4L2Util::getSizes(int fd, const v4l2_fmtdesc& format)
     if (auto ret = ioctl_nothrow(fd, VIDIOC_ENUM_FRAMESIZES, &size)) {
       if (EINVAL == ret)
 	break;
-      throw std::runtime_error("v4l2_ioctl");
+      ioctl_raise(VIDIOC_ENUM_FRAMESIZES, ret);
     }
 
     sizes.push_back(size);
@@ -82,7 +83,7 @@ V4L2Util::getIntervals(int fd, const v4l2_fmtdesc& format, const v4l2_frmsizeenu
     if (auto ret = ioctl_nothrow(fd, VIDIOC_ENUM_FRAMEINTERVALS, &interval)) {
       if (EINVAL == ret)
 	break;
-      throw std::runtime_error("v4l2_ioctl");
+      ioctl_raise(VIDIOC_ENUM_FRAMEINTERVALS, ret);
     }
 
     intervals.push_back(interval);
@@ -157,7 +158,7 @@ void
 V4L2Util::ioctl_throw(int fd, unsigned long int request, void* arg)
 {
   if (auto ret = ioctl_nothrow(fd, request, arg)) {
-    throw std::runtime_error("v4l2_ioctl");
+    ioctl_raise(request, ret);
   }
 }
   
@@ -170,5 +171,38 @@ V4L2Util::ioctl_nothrow(int fd, unsigned long int request, void* arg)
   }
   while (-1 == ret && (EINTR == errno || EAGAIN == errno));
 
-  return errno;
+  return (-1 == ret) ? errno : 0;
+}
+
+void
+V4L2Util::ioctl_raise(unsigned long int request, int err)
+{
+  std::ostringstream os;
+  os << "v4l2_ioctl(fd, ";
+  switch (request) {
+  case VIDIOC_ENUM_FMT:
+    os << "VIDIOC_ENUM_FMT";
+    break;
+  case VIDIOC_G_PARM:
+    os << "VIDIOC_G_PARM";
+    break;
+  case VIDIOC_ENUM_FRAMESIZES:
+    os << "VIDIOC_ENUM_FRAMESIZES";
+    break;
+  case VIDIOC_ENUM_FRAMEINTERVALS:
+    os << "VIDIOC_ENUM_FRAMEINTERVALS";
+    break;
+  case VIDIOC_QUERYCAP:
+    os << "VIDIOC_QUERYCAP";
+    break;
+  case VIDIOC_REQBUFS:
+    os << "VIDIOC_REQBUFS";
+    break;
+  default:
+    os << request;
+    break;
+  }
+  os << ",...): " << strerror(err) << " (" << err << ')';
+
+  throw std::runtime_error(os.str());
 }
