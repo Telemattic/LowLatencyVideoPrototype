@@ -44,16 +44,16 @@ SOURCES=`ls *.cpp`
 control: control.o
 	g++ $? -o $@ $(LDFLAGS)
 
-encoder: encoder.o
+encoder: encoder.o v4l2util.o
 	g++ $^ $(CFLAGS) -o $@ $(LDFLAGS)
 
-encoder_h264: encoder_h264.o
+encoder_h264: encoder_h264.o v4l2util.o
 	g++ $^ -o $@ $(LDFLAGS)
 
-encoder_udp: encoder_udp.o
+encoder_udp: encoder_udp.o v4l2util.o
 	g++ $^ -o $@ $(LDFLAGS)
 
-v4l2_enumerate: v4l2_enumerate.o
+v4l2_enumerate: v4l2_enumerate.o v4l2util.o
 	g++ $^ -o $@ $(LDFLAGS)
 
 viewer_stdin: viewer_stdin.o data_source_ocv_avcodec.o x264_destreamer.o packet_server.o data_source_stdio_info.o

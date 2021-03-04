@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "v4l2util.hpp"
 
 #define THROW( d ) \
 	{ \
@@ -185,26 +186,11 @@ public:
   void unlockFrame() override;
 
 private:
-  static void xioctl(int fd, int request, void* arg);
-  
   const int         m_fd;
   const v4l2_memory m_memory;
   v4l2_buffer       m_lockedBuffer;
   std::unique_ptr<BufferFactory>  m_bufferFactory;
 };
-
-void
-StreamingCapture::xioctl(int fd, int request, void* arg)
-{
-  int ret = 0;
-  do {
-    ret = v4l2_ioctl( fd, request, arg );
-  }
-  while (ret == -1 && ( (errno == EINTR) || (errno == EAGAIN) ));
-
-  if (ret == -1)
-    throw std::runtime_error("ioctl");
-}
 
 StreamingCapture::StreamingCapture(int fd, v4l2_memory memory)
   : m_fd(fd)
@@ -230,7 +216,7 @@ StreamingCapture::startCapture(size_t numBuffers, size_t imageSize)
   req.memory = m_memory;
   req.count = numBuffers;
   
-  xioctl(m_fd, VIDIOC_REQBUFS, &req);
+  V4L2Util::ioctl_throw(m_fd, VIDIOC_REQBUFS, &req);
 
   std::cout << "allocating " << req.count << " buffers" << std::endl;
 
@@ -252,7 +238,7 @@ StreamingCapture::startCapture(size_t numBuffers, size_t imageSize)
       buf.type    = V4L2_BUF_TYPE_VIDEO_CAPTURE;
       buf.memory  = V4L2_MEMORY_MMAP;
       buf.index   = i;
-      xioctl(m_fd, VIDIOC_QUERYBUF, &buf);
+      V4L2Util::ioctl_throw(m_fd, VIDIOC_QUERYBUF, &buf);
 
       m_buffers[i] = m_bufferFactory->allocate(buf.length, buf.m.offset);
 
@@ -277,12 +263,12 @@ StreamingCapture::startCapture(size_t numBuffers, size_t imageSize)
       buf.length    = m_buffers[i].second;
     }
 
-    xioctl(m_fd, VIDIOC_QBUF, &buf);
+    V4L2Util::ioctl_throw(m_fd, VIDIOC_QBUF, &buf);
   }
 
   // start streaming
   v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  xioctl(m_fd, VIDIOC_STREAMON, &type);
+  V4L2Util::ioctl_throw(m_fd, VIDIOC_STREAMON, &type);
 }
 
 void
@@ -290,7 +276,7 @@ StreamingCapture::stopCapture()
 {
   // stop streaming
   v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  xioctl(m_fd, VIDIOC_STREAMOFF, &type);
+  V4L2Util::ioctl_throw(m_fd, VIDIOC_STREAMOFF, &type);
 }
 
 Buffer
@@ -312,7 +298,7 @@ StreamingCapture::lockFrame()
 void
 StreamingCapture::unlockFrame()
 {
-  xioctl(m_fd, VIDIOC_QBUF, &m_lockedBuffer);
+  V4L2Util::ioctl_throw(m_fd, VIDIOC_QBUF, &m_lockedBuffer);
 }
 
 // wraps a V4L2_CAP_VIDEO_CAPTURE fd
@@ -329,7 +315,7 @@ public:
 
         // make sure this is a capture device
         v4l2_capability cap;
-        xioctl( mFd, VIDIOC_QUERYCAP, &cap );
+        V4L2Util::ioctl_throw( mFd, VIDIOC_QUERYCAP, &cap );
         if( !(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) )
             THROW("not a video capture device!");
 
@@ -455,11 +441,11 @@ public:
 
     v4l2_pix_format GetFormat()
     {
-        v4l2_format fmt;
-        memset( &fmt, 0, sizeof(fmt) );
-        fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        xioctl( mFd, VIDIOC_G_FMT, &fmt );
-        return fmt.fmt.pix;
+      v4l2_format fmt;
+      memset(&fmt, 0, sizeof fmt);
+      fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+      V4L2Util::ioctl_throw(mFd, VIDIOC_G_FMT, &fmt);
+      return fmt.fmt.pix;
     }
 
     bool SetFormat( const v4l2_pix_format& aFmt )
@@ -469,193 +455,51 @@ public:
         fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         fmt.fmt.pix = aFmt;
 
-        while( true )
-        {
-            try
-            {
-                xioctl( mFd, VIDIOC_S_FMT, &fmt );
-            }
-            catch( std::exception& e )
-            {
-                //if( errno == EBUSY ) continue;
-                if( errno == EINVAL ) return false;
-                throw e;
-            }
-            break;
+	if (auto ret = V4L2Util::ioctl_nothrow(mFd, VIDIOC_S_FMT, &fmt)) {
+	  if (EINVAL == ret)
+	      return false;
+	  throw std::runtime_error("v4l2_ioctl");
         }
 
         return true;
     }
 
-
     v4l2_fract GetInterval()
     {
-        v4l2_streamparm param;
-        memset( &param, 0, sizeof(param) );
-        param.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        xioctl( mFd, VIDIOC_G_PARM, &param );
-        return param.parm.capture.timeperframe;
+      return V4L2Util::getInterval(mFd);
     }
 
 
     std::vector< v4l2_fmtdesc > GetFormats()
     {
-        std::vector< v4l2_fmtdesc > fmts;
-
-        int curIndex = 0;
-        while( true )
-        {
-            v4l2_fmtdesc fmt;
-            fmt.index = curIndex++;
-            fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-
-            try
-            {
-                xioctl( mFd, VIDIOC_ENUM_FMT, &fmt );
-            }
-            catch( std::exception& e )
-            {
-                // hit the end of the enumeration list, exit
-                if( errno == EINVAL ) break;
-                else throw e;
-            }
-
-            fmts.push_back( fmt );
-        }
-
-        return fmts;
+      return V4L2Util::getFormats(mFd);
     }
 
     std::vector< v4l2_frmsizeenum > GetSizes( const v4l2_fmtdesc& format )
     {
-        std::vector< v4l2_frmsizeenum > sizes;
-
-        int curIndex = 0;
-        while( true )
-        {
-            v4l2_frmsizeenum size;
-            size.index = curIndex++;
-            size.pixel_format = format.pixelformat;
-
-            try
-            {
-                xioctl( mFd, VIDIOC_ENUM_FRAMESIZES, &size );
-            }
-            catch( std::exception& e )
-            {
-                // hit the end of the enumeration list, exit
-                if( errno == EINVAL ) break;
-                else throw e;
-            }
-
-            sizes.push_back( size );
-
-            // only discrete has multiple enumerations
-            if( size.type != V4L2_FRMSIZE_TYPE_DISCRETE )
-                break;
-        }
-
-        return sizes;
+      return V4L2Util::getSizes(mFd, format);
     }
 
     std::vector< v4l2_frmivalenum > GetIntervals( const v4l2_fmtdesc& format, const v4l2_frmsizeenum& size )
     {
-        std::vector< v4l2_frmivalenum > intervals;
-
-        int curIndex = 0;
-        while( true )
-        {
-            v4l2_frmivalenum interval;
-            interval.index = curIndex++;
-            interval.pixel_format = format.pixelformat;
-            interval.width = size.discrete.width;
-            interval.height = size.discrete.height;
-
-            try
-            {
-                xioctl( mFd, VIDIOC_ENUM_FRAMEINTERVALS, &interval ); 
-            }
-            catch( std::exception& e )
-            {
-                // hit the end of the enumeration list, exit
-                if( errno == EINVAL ) break;
-                else throw e;
-            }
-
-            intervals.push_back( interval );
-            curIndex++;
-        }
-
-        return intervals;
+      return V4L2Util::getIntervals(mFd, format, size);
     }
 
 private:
     std::vector< IO > IOMethods()
     {
         std::vector< IO > supported;
+	
+	if (V4L2Util::canCaptureReadWrite(mFd))
+	  supported.push_back(READ);
 
-        v4l2_capability cap;
-        xioctl( mFd, VIDIOC_QUERYCAP, &cap );
+	if (V4L2Util::canCaptureUserPtr(mFd))
+	  supported.push_back(USERPTR);
 
-        // test read/write
-        if( cap.capabilities & V4L2_CAP_READWRITE )
-            supported.push_back( READ );
-
-        if( cap.capabilities & V4L2_CAP_STREAMING )
-        {
-            v4l2_requestbuffers req;
-            int ret = 0;
-
-            // test userptr
-            memset( &req, 0, sizeof(req) );
-            req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            req.count = 1;
-            req.memory = V4L2_MEMORY_USERPTR;
-            if( 0 == v4l2_ioctl( mFd, VIDIOC_REQBUFS, &req ) )
-            {
-                supported.push_back( USERPTR );
-                req.count = 0;
-                // blind ioctl, some drivers get pissy with count = 0
-                v4l2_ioctl( mFd, VIDIOC_REQBUFS, &req );
-            }
-
-            // test mmap
-            memset( &req, 0, sizeof(req) );
-            req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            req.count = 1;
-            req.memory = V4L2_MEMORY_MMAP;
-            if( 0 == v4l2_ioctl( mFd, VIDIOC_REQBUFS, &req ) )
-            {
-                supported.push_back( MMAP );
-                req.count = 0;
-                // blind ioctl, some drivers get pissy with count = 0
-                v4l2_ioctl( mFd, VIDIOC_REQBUFS, &req );
-            }
-        }
+	if (V4L2Util::canCaptureMMap(mFd))
+	  supported.push_back(MMAP);
 
         return supported;
-    }
-
-    static const char* strreq( int r )
-    {
-        if( r == VIDIOC_QUERYCAP )  return "VIDIOC_QUERYCAP";
-        if( r == VIDIOC_ENUM_FMT )  return "VIDIOC_ENUM_FMT";
-        if( r == VIDIOC_G_FMT )     return "VIDIOC_G_FMT";
-        if( r == VIDIOC_REQBUFS )   return "VIDIOC_REQBUFS";
-        return "UNKNOWN";
-    }
-
-    static void xioctl( int fd, int request, void* arg )
-    {
-        int ret = 0;
-        do
-        {
-            ret = v4l2_ioctl( fd, request, arg );
-        }
-        while( ret == -1 && ( (errno == EINTR) || (errno == EAGAIN) ) );
-
-        if( ret == -1 )
-            THROW( "Req: " << strreq(request) << ", ioctl() error: " << strerror(errno) );
     }
 
     int mFd;
