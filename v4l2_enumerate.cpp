@@ -1,5 +1,8 @@
 #include "v4l2device.hpp"
 
+#include <fcntl.h>
+
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <map>
