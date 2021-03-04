@@ -244,8 +244,98 @@ double stdev( const Cont& v )
     return stdev;
 }
 
+class Encoder {
 
+public:
+  Encoder(uint16_t width, uint16_t height, const v4l2_fract& fps);
+  ~Encoder();
 
+  void operator()(x264_picture_t& input, std::vector<uint8_t>& output);
+
+private:
+  const uint16_t  m_width;
+  const uint16_t  m_height;
+  x264_t*         m_encoder = nullptr;
+};
+
+Encoder::Encoder(uint16_t width, uint16_t height, const v4l2_fract& fps)
+  : m_width(width)
+  , m_height(height)
+{
+    // --slice-max-size A
+    // --vbv-maxrate B
+    // --vbv-bufsize C
+    // --crf D
+    // --intra-refresh
+    // --tune zerolatency
+
+    // A is your packet size
+    // B is your connection speed
+    // C is (B / FPS)
+    // D is a number from 18-30 or so (quality level, lower is better but higher bitrate).
+
+    // Equally, you can do constant bitrate instead of capped constant quality,
+    // by replacing CRF with --bitrate B, where B is the maxrate above.
+
+    int packetsize = 1200; // bytes
+    int maxrate = 400; // kbps
+    int f =  fps.denominator / fps.numerator;
+    int C = maxrate / f;
+
+    x264_param_t param;
+
+    x264_param_default_preset( &param, "superfast", "zerolatency" );
+
+    param.i_width   = width;
+    param.i_height  = height;
+    param.i_fps_num = fps.denominator;
+    param.i_fps_den = fps.numerator;
+    param.b_repeat_headers = 1;
+
+    x264_param_parse( &param, "slice-max-size", TS(packetsize).c_str() );
+    x264_param_parse( &param, "vbv-maxrate", TS(maxrate).c_str() );
+    x264_param_parse( &param, "vbv-bufsize", TS(C).c_str() );
+    x264_param_parse( &param, "bitrate", TS(maxrate).c_str() );
+
+    x264_param_parse( &param, "intra-refresh", NULL );
+    param.i_frame_reference = 1;
+    param.b_annexb = 1;
+
+    x264_param_apply_profile(&param, "high");
+    
+    m_encoder = x264_encoder_open(&param);
+}
+
+Encoder::~Encoder()
+{
+  x264_encoder_close(m_encoder);
+}
+
+void
+Encoder::operator()(x264_picture_t& input, std::vector<uint8_t>& output)
+{
+  x264_nal_t* nals = nullptr;
+  int num_nals = 0;
+  x264_picture_t pic_out;
+  if (x264_encoder_encode(m_encoder, &nals, &num_nals, &input, &pic_out) < 0) {
+    throw std::runtime_error("x264_encoder_encode");
+  }
+
+  size_t numBytes = 0;
+  for (int i = 0; i < num_nals; ++i) {
+    numBytes += nals[i].i_payload;
+  }
+
+  output.clear();
+  output.reserve(numBytes);
+
+  for (int i = 0; i < num_nals; ++i) {
+    
+    auto begin = nals[i].p_payload;
+    auto end   = begin + nals[i].i_payload;
+    output.insert(output.end(), begin, end);
+  }
+}
 
 int main( int argc, char** argv )
 {
@@ -413,8 +503,11 @@ int main( int argc, char** argv )
 
     x264_param_apply_profile( &param, "high" );
 
+#if 0
     // Open encoder
     x264_t* encoder = x264_encoder_open( &param );
+#endif
+    Encoder encoder(outputWidth, outputHeight, fps);
 
       // Allocate I420 picture
     x264_picture_t pic_in;
@@ -476,6 +569,7 @@ int main( int argc, char** argv )
 
         prv = now();
 
+#if 0
         // Encode frame
         x264_nal_t* nals;
         int num_nals;
@@ -490,6 +584,9 @@ int main( int argc, char** argv )
             uint8_t* end = nals[i].p_payload + nals[i].i_payload;
             buf.insert( buf.end(), beg, end );
         }
+#endif
+	std::vector<uint8_t> buf;
+	encoder(pic_in, buf);
 
         acc["3 - encode(ms):    "].push_back( ( now() - prv ) * 1000.0 );
 
@@ -530,7 +627,10 @@ int main( int argc, char** argv )
     }
 
     dev.StopCapture();
+
+#if 0
     x264_encoder_close( encoder );
+#endif
 
     return 0;
 }
