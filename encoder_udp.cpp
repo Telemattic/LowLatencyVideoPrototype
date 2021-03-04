@@ -501,8 +501,8 @@ int main( int argc, char** argv )
     {
         prv = now();
 
-        const VideoCapture::Buffer& b = dev.LockFrame();
-        uint8_t* ptr = reinterpret_cast< unsigned char* >( const_cast< char* >( b.start ) );
+        const auto b = dev.LockFrame();
+        uint8_t* ptr = reinterpret_cast<uint8_t*>(b.first);
 
         acc["1 - capture(ms):    "].push_back( ( now() - prv ) * 1000.0 );
 

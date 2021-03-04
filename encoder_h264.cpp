@@ -237,23 +237,23 @@ int main( int argc, char** argv )
         //fwrite( (const char*)nal_header, 1, sizeof( nal_header ), stdout );
         //fflush( stdout );
 
-        const VideoCapture::Buffer& b = dev.LockFrame();
-        uint8_t* ptr = reinterpret_cast< unsigned char* >( const_cast< char* >( b.start ) );
+        const auto b = dev.LockFrame();
+        uint8_t* ptr = reinterpret_cast<uint8_t*>(b.first);
 
         acc["1 - capture(ms):    "].push_back( ( now() - prv ) * 1000.0 );
 
         prv = now();
 
-        //send everything except the first NAL header, which we already sent
-        if( b.length > 4 )
+        // send everything except the first NAL header, which we already sent
+        if( b.second > 4 )
         {
-            //fwrite( ptr+4, 1, b.length-4, stdout );
-            fwrite( ptr, 1, b.length, stdout );
+            // fwrite( ptr+4, 1, b.length-4, stdout );
+            fwrite( ptr, 1, b.second, stdout );
             fflush( stdout ); //No need to fflush here, since the NAL header will do so
         }
 
         acc["2 - fwrite(ms):     "].push_back( ( now() - prv ) * 1000.0 );
-        acc["3 - bytes/frame:    "].push_back( b.length );
+        acc["3 - bytes/frame:    "].push_back( b.second );
 
         dev.UnlockFrame();
 

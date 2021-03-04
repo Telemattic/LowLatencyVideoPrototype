@@ -319,13 +319,6 @@ StreamingCapture::unlockFrame()
 class VideoCapture
 {
 public:
-    struct Buffer
-    {
-        Buffer() : start(NULL), length(0) {}
-	    char* start;
-	    size_t length;
-    };
-
     enum IO { READ, USERPTR, MMAP };
 
     VideoCapture( const std::string& device, const IO aIO = MMAP )
@@ -359,7 +352,6 @@ public:
         mCapturing = false;
         mIsLocked = false;
 
-#if 1	
 	if (READ == mIO) {
 	  m_capture = std::make_unique<ReadWriteCapture>(mFd);
 	}
@@ -367,7 +359,6 @@ public:
 	  auto memory = (MMAP == mIO) ? V4L2_MEMORY_MMAP : V4L2_MEMORY_USERPTR;
 	  m_capture = std::make_unique<StreamingCapture>(mFd, memory);
 	}
-#endif
     }
 
     ~VideoCapture()
@@ -405,79 +396,7 @@ public:
 
         const unsigned int bufCount = 4;
 
-	if (m_capture) {
-	  m_capture->startCapture(bufCount, fmt.sizeimage);
-	  return;
-	}
-
-        if( mIO == READ )
-        {
-            // allocate buffer
-            mBuffers.resize( 1 );
-            mBuffers[ 0 ].length = fmt.sizeimage;
-            mBuffers[ 0 ].start = new char[ fmt.sizeimage ];
-        }
-        else
-        {
-            // request buffers
-            v4l2_requestbuffers req;
-            memset( &req, 0, sizeof(req) );
-            req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            req.memory = ( mIO == MMAP ? V4L2_MEMORY_MMAP : V4L2_MEMORY_USERPTR );
-            req.count = bufCount;
-            xioctl( mFd, VIDIOC_REQBUFS, &req );
-
-            if( mIO == USERPTR )
-            {
-                // allocate buffers
-                mBuffers.resize( req.count );
-                for( size_t i = 0; i < mBuffers.size(); ++i )
-                {
-                    mBuffers[ i ].length = fmt.sizeimage;
-                    mBuffers[ i ].start = new char[ fmt.sizeimage ];
-                }
-            }
-            else
-            {
-                // mmap buffers
-                mBuffers.resize( req.count );
-                for( size_t i = 0; i < mBuffers.size(); ++i )
-                {
-                    v4l2_buffer buf;
-                    memset( &buf, 0, sizeof(buf) );
-                    buf.type    = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-                    buf.memory  = V4L2_MEMORY_MMAP;
-                    buf.index   = i;
-                    xioctl( mFd, VIDIOC_QUERYBUF, &buf );
-
-                    mBuffers[i].length = buf.length;
-                    mBuffers[i].start = (char*)v4l2_mmap(NULL, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, mFd, buf.m.offset);
-                    if( mBuffers[i].start == MAP_FAILED )
-                        THROW("mmap() failed!");
-                }
-            }
-
-            // queue buffers
-            for( size_t i = 0; i < mBuffers.size(); ++i )
-            {
-                v4l2_buffer buf;
-                memset( &buf, 0, sizeof(buf) );
-                buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-                buf.index       = i;
-                buf.memory = ( mIO == MMAP ? V4L2_MEMORY_MMAP : V4L2_MEMORY_USERPTR );
-                if( mIO == USERPTR )
-                {
-                    buf.m.userptr   = (unsigned long)mBuffers[i].start;
-                    buf.length      = mBuffers[i].length;
-                }
-
-                xioctl( mFd, VIDIOC_QBUF, &buf );
-            }
-
-            // start streaming
-            v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            xioctl( mFd, VIDIOC_STREAMON, &type );
-        }
+	m_capture->startCapture(bufCount, fmt.sizeimage);
     }
 
     void StopCapture()
@@ -485,42 +404,13 @@ public:
         if( !mCapturing ) return;
         mCapturing = false;
 
-	if (m_capture) {
-	  m_capture->stopCapture();
-	  return;
-	}
-
-        if( mIO == READ )
-        {
-            delete[] mBuffers[0].start;
-        }
-        else
-        {
-            // stop streaming
-            v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            xioctl( mFd, VIDIOC_STREAMOFF, &type );
-
-            if( mIO == USERPTR )
-            {
-                // free memory
-                for( size_t i = 0; i < mBuffers.size(); ++i )
-                    delete[] mBuffers[i].start;
-            }
-            else
-            {
-                // unmap memory
-                for( size_t i = 0; i < mBuffers.size(); ++i )
-                    if( -1 == v4l2_munmap(mBuffers[i].start, mBuffers[i].length) )
-                        THROW( "munmap() failed!" );
-            }
-        }
-
+	m_capture->stopCapture();
     }
 
     // wait for next frame and return it
     // timeout in seconds
     // someway to indicate timeout?  zero buffer?
-    const Buffer& LockFrame( const float aTimeout = -1.0f )
+    Buffer LockFrame( const float aTimeout = -1.0f )
     {
         if( mIsLocked ) THROW( "already locked!" );
         mIsLocked = true;
@@ -551,61 +441,7 @@ public:
             break;
         }
 
-	if (m_capture) {
-	  auto f = m_capture->lockFrame();
-	  mLockedFrame.start = f.first;
-	  mLockedFrame.length = f.second;
-	  return mLockedFrame;
-	}
-
-        if( mIO == READ )
-        {
-            if( -1 == v4l2_read( mFd, mBuffers[0].start, mBuffers[0].length) )
-            {
-                if( errno != EAGAIN && errno != EIO )
-                    THROW( "read() error" );
-            }
-
-            mLockedFrame.start = mBuffers[0].start;
-            mLockedFrame.length = mBuffers[0].length;
-        }
-        else
-        {
-            memset( &mLockedBuffer, 0, sizeof(mLockedBuffer) );
-            mLockedBuffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            mLockedBuffer.memory = ( mIO == MMAP ? V4L2_MEMORY_MMAP : V4L2_MEMORY_USERPTR );
-            if( -1 == v4l2_ioctl( mFd, VIDIOC_DQBUF, &mLockedBuffer) )
-            {
-                if( errno != EAGAIN && errno != EIO )
-                    THROW( "ioctl() error" );
-            }
-
-            size_t i;
-            if( mIO == USERPTR )
-            {
-                // only given pointers, find corresponding index
-                for( i = 0; i < mBuffers.size(); ++i )
-                {
-                    if( mLockedBuffer.m.userptr == (unsigned long)mBuffers[i].start &&
-                        mLockedBuffer.length == mBuffers[i].length )
-                    {
-                        break;
-                    }
-                }
-            }
-            else
-            {
-                i = mLockedBuffer.index;
-            }
-
-            if( i >= mBuffers.size() )
-                THROW( "buffer index out of range" );
-
-            mLockedFrame.start = mBuffers[i].start;
-            mLockedFrame.length = mLockedBuffer.bytesused;
-        }
-
-        return mLockedFrame;
+	return m_capture->lockFrame();
     }
 
     void UnlockFrame()
@@ -613,14 +449,7 @@ public:
         if( !mIsLocked ) return;
         mIsLocked = false;
 
-	if (m_capture) {
-	  m_capture->unlockFrame();
-	  return;
-	}
-
-        if( mIO == READ ) return;
-
-        xioctl( mFd, VIDIOC_QBUF, &mLockedBuffer );
+	m_capture->unlockFrame();
     }
 
 
@@ -835,10 +664,8 @@ private:
     bool mCapturing;
 
     bool mIsLocked;
-    Buffer mLockedFrame;
     v4l2_buffer mLockedBuffer;
 
-    std::vector< Buffer > mBuffers;
   std::unique_ptr<Capture> m_capture;
 };
 
