@@ -461,52 +461,6 @@ int main( int argc, char** argv )
 
     Scaler scaler(fmt, outputWidth, outputHeight);
 
-    // Initialize encoder
-    x264_param_t param;
-
-    // --slice-max-size A
-    // --vbv-maxrate B
-    // --vbv-bufsize C
-    // --crf D
-    // --intra-refresh
-    // --tune zerolatency
-
-    // A is your packet size
-    // B is your connection speed
-    // C is (B / FPS)
-    // D is a number from 18-30 or so (quality level, lower is better but higher bitrate).
-
-    // Equally, you can do constant bitrate instead of capped constant quality,
-    // by replacing CRF with --bitrate B, where B is the maxrate above.
-
-    int packetsize = 1200; // bytes
-    int maxrate = 400; // kbps
-    int f =  fps.denominator / fps.numerator;
-    int C = maxrate / f;
-
-    x264_param_default_preset( &param, "superfast", "zerolatency" );
-
-    param.i_width   = outputWidth;
-    param.i_height  = outputHeight;
-    param.i_fps_num = fps.denominator;
-    param.i_fps_den = fps.numerator;
-    param.b_repeat_headers = 1;
-
-    x264_param_parse( &param, "slice-max-size", TS(packetsize).c_str() );
-    x264_param_parse( &param, "vbv-maxrate", TS(maxrate).c_str() );
-    x264_param_parse( &param, "vbv-bufsize", TS(C).c_str() );
-    x264_param_parse( &param, "bitrate", TS(maxrate).c_str() );
-
-    x264_param_parse( &param, "intra-refresh", NULL );
-    param.i_frame_reference = 1;
-    param.b_annexb = 1;
-
-    x264_param_apply_profile( &param, "high" );
-
-#if 0
-    // Open encoder
-    x264_t* encoder = x264_encoder_open( &param );
-#endif
     Encoder encoder(outputWidth, outputHeight, fps);
 
       // Allocate I420 picture
@@ -569,22 +523,6 @@ int main( int argc, char** argv )
 
         prv = now();
 
-#if 0
-        // Encode frame
-        x264_nal_t* nals;
-        int num_nals;
-        x264_picture_t pic_out;
-        x264_encoder_encode( encoder, &nals, &num_nals, &pic_in, &pic_out );
-
-        // dump nals into a buffer
-        vector< unsigned char > buf;
-        for( int i = 0; i < num_nals; ++i )
-        {
-            uint8_t* beg = nals[i].p_payload;
-            uint8_t* end = nals[i].p_payload + nals[i].i_payload;
-            buf.insert( buf.end(), beg, end );
-        }
-#endif
 	std::vector<uint8_t> buf;
 	encoder(pic_in, buf);
 
@@ -627,10 +565,6 @@ int main( int argc, char** argv )
     }
 
     dev.StopCapture();
-
-#if 0
-    x264_encoder_close( encoder );
-#endif
 
     return 0;
 }
