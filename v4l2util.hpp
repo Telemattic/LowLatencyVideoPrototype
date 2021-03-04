@@ -10,6 +10,9 @@
 namespace V4L2Util
 {
   std::vector<v4l2_fmtdesc>     getFormats(int fd);
+  v4l2_pix_format               getFormat(int fd);
+  bool                          setFormat(int fd, const v4l2_pix_format&);
+
   v4l2_fract                    getInterval(int fd);
   std::vector<v4l2_frmsizeenum> getSizes(int fd, const v4l2_fmtdesc&);
   std::vector<v4l2_frmivalenum> getIntervals(int fd, const v4l2_fmtdesc&, const v4l2_frmsizeenum&);

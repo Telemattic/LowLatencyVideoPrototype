@@ -289,7 +289,7 @@ StreamingCapture::lockFrame()
   if (-1 == v4l2_ioctl(m_fd, VIDIOC_DQBUF, &m_lockedBuffer)) {
 
     if (errno != EAGAIN && errno != EIO)
-      THROW( "ioctl(VIDIOC_DQBUF) error" );
+      V4L2Util::ioctl_raise(VIDIOC_DQBUF, errno);
   }
 
   return Buffer{m_buffers[m_lockedBuffer.index].first, m_lockedBuffer.bytesused};
@@ -310,17 +310,17 @@ public:
     VideoCapture( const std::string& device, const IO aIO = MMAP )
     {
         mFd = v4l2_open( device.c_str(), O_RDWR | O_NONBLOCK, 0);
-        if( mFd == - 1 )
+        if (mFd == -1)
             THROW( "can't open " << device << ": " << strerror(errno) );
 
         // make sure this is a capture device
         v4l2_capability cap;
-        V4L2Util::ioctl_throw( mFd, VIDIOC_QUERYCAP, &cap );
-        if( !(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) )
+        V4L2Util::ioctl_throw(mFd, VIDIOC_QUERYCAP, &cap) ;
+        if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE))
             THROW("not a video capture device!");
 
         mSupported = IOMethods();
-        if( mSupported.empty() ) THROW("no supported IO methods!");
+        if (mSupported.empty()) THROW("no supported IO methods!");
 
         bool found_requested = false;
         for( size_t i = 0; i < mSupported.size(); ++i )
@@ -441,27 +441,12 @@ public:
 
     v4l2_pix_format GetFormat()
     {
-      v4l2_format fmt;
-      memset(&fmt, 0, sizeof fmt);
-      fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-      V4L2Util::ioctl_throw(mFd, VIDIOC_G_FMT, &fmt);
-      return fmt.fmt.pix;
+      return V4L2Util::getFormat(mFd);
     }
 
     bool SetFormat( const v4l2_pix_format& aFmt )
     {
-        v4l2_format fmt;
-        memset( &fmt, 0, sizeof(fmt) );
-        fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        fmt.fmt.pix = aFmt;
-
-	if (auto ret = V4L2Util::ioctl_nothrow(mFd, VIDIOC_S_FMT, &fmt)) {
-	  if (EINVAL == ret)
-	      return false;
-	  throw std::runtime_error("v4l2_ioctl");
-        }
-
-        return true;
+      return V4L2Util::setFormat(mFd, aFmt);
     }
 
     v4l2_fract GetInterval()

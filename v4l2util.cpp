@@ -153,6 +153,33 @@ V4L2Util::canCaptureMMap(int fd)
 
   return true;
 }
+
+v4l2_pix_format
+V4L2Util::getFormat(int fd)
+{
+  v4l2_format fmt;
+  memset(&fmt, 0, sizeof fmt);
+  fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  ioctl_throw(fd, VIDIOC_G_FMT, &fmt);
+  return fmt.fmt.pix;
+}
+
+bool
+V4L2Util::setFormat(int fd, const v4l2_pix_format& arg)
+{
+  v4l2_format fmt;
+  memset(&fmt, 0, sizeof fmt);
+  fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  fmt.fmt.pix = arg;
+
+  if (auto ret = ioctl_nothrow(fd, VIDIOC_S_FMT, &fmt)) {
+    if (EINVAL == ret)
+      return false;
+    ioctl_raise(VIDIOC_S_FMT, ret);
+  }
+
+  return true;
+}
   
 void
 V4L2Util::ioctl_throw(int fd, unsigned long int request, void* arg)
@@ -180,23 +207,41 @@ V4L2Util::ioctl_raise(unsigned long int request, int err)
   std::ostringstream os;
   os << "v4l2_ioctl(fd, ";
   switch (request) {
+  case VIDIOC_DQBUF:
+    os << "VIDIOC_DQBUF";
+    break;
   case VIDIOC_ENUM_FMT:
     os << "VIDIOC_ENUM_FMT";
     break;
-  case VIDIOC_G_PARM:
-    os << "VIDIOC_G_PARM";
+  case VIDIOC_ENUM_FRAMEINTERVALS:
+    os << "VIDIOC_ENUM_FRAMEINTERVALS";
     break;
   case VIDIOC_ENUM_FRAMESIZES:
     os << "VIDIOC_ENUM_FRAMESIZES";
     break;
-  case VIDIOC_ENUM_FRAMEINTERVALS:
-    os << "VIDIOC_ENUM_FRAMEINTERVALS";
+  case VIDIOC_G_FMT:
+    os << "VIDIOC_G_FMT";
+    break;
+  case VIDIOC_G_PARM:
+    os << "VIDIOC_G_PARM";
+    break;
+  case VIDIOC_QBUF:
+    os << "VIDIOC_QBUF";
+    break;
+  case VIDIOC_QUERYBUF:
+    os << "VIDIOC_QUERYBUF";
     break;
   case VIDIOC_QUERYCAP:
     os << "VIDIOC_QUERYCAP";
     break;
   case VIDIOC_REQBUFS:
     os << "VIDIOC_REQBUFS";
+    break;
+  case VIDIOC_STREAMOFF:
+    os << "VIDIOC_STREAMOFF";
+    break;
+  case VIDIOC_STREAMON:
+    os << "VIDIOC_STREAMON";
     break;
   default:
     os << request;
