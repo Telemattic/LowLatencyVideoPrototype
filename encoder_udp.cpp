@@ -206,31 +206,6 @@ Scaler::operator()(const uint8_t* src, x264_image_t& dst)
 	    dst.plane, dst.i_stride);
 }
 
-void GetLayout( const v4l2_pix_format& fmt, vector< int >& offsets, vector< int >& strides )
-{
-    offsets.clear();
-    strides.clear();
-    if( fmt.pixelformat == V4L2_PIX_FMT_YUV420 )
-    {
-        // planar format
-        offsets.push_back( 0 );
-        offsets.push_back( offsets.back() + ( fmt.height * fmt.bytesperline ) );
-        offsets.push_back( offsets.back() + ( (fmt.height/2) * (fmt.bytesperline/2) ) );
-
-        strides.push_back( fmt.bytesperline );
-        strides.push_back( fmt.bytesperline / 2 );
-        strides.push_back( fmt.bytesperline / 2 );
-    }
-    else
-    {
-        // assume packed format
-        offsets.push_back( 0 );
-        strides.push_back( fmt.bytesperline );
-    }
-}
-
-
-
 double now()
 {
     timespec temp;
@@ -390,33 +365,9 @@ int main( int argc, char** argv )
         cerr << endl;
     }
 
-    // get offsets/strides for selected frame format
-    vector< int > offsets;
-    vector< int > strides;
-    GetLayout( fmt, offsets, strides );
-    vector< uint8_t* > planes( offsets.size() );
-
     // Allocate conversion context
     unsigned int outputWidth = WIDTH;
     unsigned int outputHeight = HEIGHT;
-    SwsContext* swsCtx = sws_getContext
-        (
-        fmt.width,
-        fmt.height,
-        FormatMap[ fmt.pixelformat ],
-        outputWidth,
-        outputHeight,
-        AV_PIX_FMT_YUV420P,
-        SWS_FAST_BILINEAR,
-        NULL,
-        NULL,
-        NULL
-        );
-    if( swsCtx == NULL )
-    {
-        cerr << "swsctx alloc fail" << endl;
-        exit( EXIT_FAILURE );
-    }
 
     Scaler scaler(fmt, outputWidth, outputHeight);
 
@@ -516,23 +467,6 @@ int main( int argc, char** argv )
 
 
         prv = now();
-
-	#if 0
-        // apply plane offsets
-        for( size_t i = 0; i < planes.size(); ++i )
-            planes[i] = ptr + offsets[i];
-
-        sws_scale
-            (
-            swsCtx,
-            &planes[0],
-            &strides[0],
-            0,
-            fmt.height,
-            pic_in.img.plane,
-            pic_in.img.i_stride
-            );
-	#endif
 
 	scaler(ptr, pic_in.img);
 
