@@ -409,22 +409,16 @@ int main( int argc, char** argv )
     cerr << "Interval: " << fps << endl;
     cerr << endl;
 
-    // v4l2 pixelformat -> libswscale colorspace
-    map< __u32, AVPixelFormat > FormatMap;
-    FormatMap[ V4L2_PIX_FMT_YUYV ]      =  AV_PIX_FMT_YUYV422;
-    FormatMap[ V4L2_PIX_FMT_YUV420 ]    =  AV_PIX_FMT_YUV420P;
-    FormatMap[ V4L2_PIX_FMT_RGB24 ]     =  AV_PIX_FMT_RGB24;
-    FormatMap[ V4L2_PIX_FMT_BGR24 ]     =  AV_PIX_FMT_BGR24;
 
     bool formatFound = false;
-    map< __u32, AVPixelFormat >::iterator i;
-    for( i = FormatMap.begin(); i != FormatMap.end(); ++i )
-    {
-        if( fmt.pixelformat == i->first )
-        {
-            formatFound = true;
-            break;
-        }
+    
+    switch (fmt.pixelformat) {
+    case V4L2_PIX_FMT_YUYV:
+    case V4L2_PIX_FMT_YUV420:
+    case V4L2_PIX_FMT_RGB24:
+    case V4L2_PIX_FMT_BGR24:
+      formatFound = true;
+      break;
     }
 
     if( !formatFound )
